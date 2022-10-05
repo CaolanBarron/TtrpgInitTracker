@@ -1,20 +1,34 @@
-use std::{fs::File, path::Path, io::{Write, stdout}, vec};
+use std::{fs::File, path::Path, io::{Write, stdout, BufReader, Read}, vec, fs};
 
+use clap::{Parser};
 use text_io::{try_read, read};
-use crossterm::{event::{self as ct_event, KeyCode, KeyEvent, Event}, terminal::{enable_raw_mode, disable_raw_mode, EnterAlternateScreen}, execute, cursor::MoveTo, style::Print};
+use crossterm::{event::{self as ct_event, KeyCode, KeyEvent, Event}, terminal::{enable_raw_mode, disable_raw_mode, EnterAlternateScreen, Clear, ClearType}, execute, cursor::MoveTo, style::{Print, SetForegroundColor, Color, ResetColor}};
 
 use crate::character::Character;
 
 mod character;
 
-#[derive(Default)]
-struct Arguments {
+#[derive(Parser, Debug)]
+struct Args {
+    #[clap(short, long)]
     file_path: String,
 }
 
-pub(crate) fn create_encounter() -> Vec<Character> {
+pub(crate) fn create_encounter(contents: String) {
     let mut characters: Vec<Character> = vec![];
 
+    contents.split("-").into_iter()
+        .for_each(|f| {
+            if !f.is_empty() {characters.push(serde_json::from_str(f).unwrap())}
+        });
+
+    for c in characters.iter_mut() {
+        if c.initiative == None {
+            println!("Enter {}'s initiative: ", {&c.name()});
+            c.initiative = Some(read!("{}\n"));
+        }
+    }
+     
     loop {
         println!("Enter the characters name: ");
         let name:String = read!("{}\n");
@@ -37,17 +51,11 @@ pub(crate) fn create_encounter() -> Vec<Character> {
         })
     }
     characters.sort_by(|a, b| b.initiative().cmp(&a.initiative()));
-    characters
+    run_encounter(characters);
+    
 }
 
-pub(crate) fn create_party_file(path: &String) {
-    let path = Path::new(path);
-    let display = path.display();
-
-    let mut file = match File::create(path) {
-        Err(why) => panic!("Couldnt write to {}: {}", display, why),
-        Ok(file) => file,
-    };
+pub(crate) fn create_party_file(mut file: File) {
 
     let mut characters = vec![];
 
@@ -59,38 +67,51 @@ pub(crate) fn create_party_file(path: &String) {
         if name.is_empty() {
             break;
         } else {
-            characters.push(serde_json::to_string(&Character::new(name, None)))
+            characters.push(Character::new(name, None))
         }
     }
 
-    characters.iter().for_each(|f| file.write_all(f.as_ref().unwrap().as_bytes()).expect("Failed while writing"));
+    characters.iter().for_each(|f| {serde_json::to_writer(&file, f).unwrap(); file.write(b"-");})
+    // characters.iter().for_each(|f| file.write_all(f.as_ref().unwrap().as_bytes()).expect("Failed while writing"));
 }
 
 fn run_encounter(mut characters: Vec<Character>) {
 
     enable_raw_mode().unwrap();
     let mut writer = stdout();
-    execute!(writer, EnterAlternateScreen).unwrap();
+    execute!(writer,Clear(crossterm::terminal::ClearType::All), EnterAlternateScreen).unwrap();
     let mut index: usize = 0;
     
+    // Write the users options
+    execute!(writer, 
+        MoveTo(3, 10), 
+        Print("X: Remove character"),
+        MoveTo(25, 10),
+        Print("<-/->: Change character"),
+    );
     
     loop{
         
         // Show the previous character
         execute!(writer, 
-            MoveTo(5,4), 
+            MoveTo(5,4),
+            Clear(ClearType::CurrentLine),
             Print("Previous character: ".to_string() 
                 + &characters[((index + characters.len()) - 1) % characters.len()].to_string())).unwrap();
 
         // Show the current character
         execute!(writer, 
             MoveTo(5,6), 
+            Clear(ClearType::CurrentLine),
+            SetForegroundColor(Color::Green),
             Print("Current character: ".to_string() 
-                + &characters[(index + characters.len()) % characters.len()].to_string())).unwrap();
+                + &characters[(index + characters.len()) % characters.len()].to_string()),
+            ResetColor).unwrap();
 
         //Show the next character
         execute!(writer, 
             MoveTo(5,8), 
+            Clear(ClearType::CurrentLine),
             Print("Next Character: ".to_string() 
                 + &characters[((index + 1) + characters.len()) % characters.len()].to_string())).unwrap();
         
@@ -101,6 +122,7 @@ fn run_encounter(mut characters: Vec<Character>) {
         }
     }
     disable_raw_mode().unwrap();
+    execute!(writer, Clear(ClearType::All));
 
     println!("Encounter finished!");
 }
@@ -126,5 +148,10 @@ fn get_input(index: &mut usize, characters: &mut Vec<Character>) {
     
 }
 fn main() {
-    
+    let arg =  Args::parse(); 
+    let path = Path::new(&arg.file_path);
+    match File::open(Path::new(path)) {
+        Ok(f) => create_encounter(fs::read_to_string(path).unwrap()),
+        Err(_) => create_party_file(File::create(Path::new(path)).unwrap()),
+    };
 }
